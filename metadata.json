@@ -1,0 +1,6 @@
+{
+  "name": "StreetFlood Alert",
+  "description": "Hyper-local street-level flood early warning app using live rain gauge and drain water-level telemetry to alert residents early and suggest safe alternate routes.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

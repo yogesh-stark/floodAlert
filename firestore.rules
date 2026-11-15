@@ -1,0 +1,254 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'yoge262007@gmail.com'
+      );
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'preferredLang', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'role', 'preferredLang', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
+        && data.role in ['resident', 'reporter', 'admin']
+        && data.preferredLang in ['en', 'ta']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPrivateContact(data) {
+      return data.keys().hasAll(['email', 'updatedAt'])
+        && data.keys().hasOnly(['email', 'phone', 'fcmToken', 'updatedAt'])
+        && data.email is string && data.email.size() <= 200
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 30))
+        && (!('fcmToken' in data) || (data.fcmToken is string && data.fcmToken.size() <= 512))
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStreet(data) {
+      return data.keys().hasAll(['name', 'area', 'drainDepthCm', 'watchPct', 'warningPct', 'dangerPct', 'visibility', 'updatedAt'])
+        && data.keys().hasOnly(['name', 'area', 'drainDepthCm', 'watchPct', 'warningPct', 'dangerPct', 'visibility', 'updatedAt'])
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 120
+        && data.area is string && data.area.size() >= 2 && data.area.size() <= 100
+        && data.drainDepthCm is number && data.drainDepthCm > 0 && data.drainDepthCm <= 1000
+        && data.watchPct is number && data.watchPct >= 10 && data.watchPct <= 95
+        && data.warningPct is number && data.warningPct >= 20 && data.warningPct <= 98
+        && data.dangerPct is number && data.dangerPct >= 30 && data.dangerPct <= 100
+        && data.visibility == 'public'
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSensor(data) {
+      return data.keys().hasAll(['streetId', 'hardwareType', 'status', 'batteryPct', 'visibility', 'updatedAt'])
+        && data.keys().hasOnly(['streetId', 'hardwareType', 'status', 'batteryPct', 'visibility', 'updatedAt'])
+        && isValidId(data.streetId)
+        && data.hardwareType is string && data.hardwareType.size() >= 2 && data.hardwareType.size() <= 80
+        && data.status in ['online', 'offline', 'low_battery']
+        && data.batteryPct is number && data.batteryPct >= 0 && data.batteryPct <= 100
+        && data.visibility == 'public'
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidReading(data) {
+      return data.keys().hasAll(['streetId', 'sensorId', 'waterLevelCm', 'rainfallMmHr', 'riskScore', 'visibility', 'createdAt'])
+        && data.keys().hasOnly(['streetId', 'sensorId', 'waterLevelCm', 'rainfallMmHr', 'riskScore', 'visibility', 'createdAt'])
+        && isValidId(data.streetId)
+        && isValidId(data.sensorId)
+        && data.waterLevelCm is number && data.waterLevelCm >= 0 && data.waterLevelCm <= 1000
+        && data.rainfallMmHr is number && data.rainfallMmHr >= 0 && data.rainfallMmHr <= 500
+        && data.riskScore is number && data.riskScore >= 0 && data.riskScore <= 100
+        && data.visibility == 'public'
+        && data.createdAt is timestamp;
+    }
+
+    function isValidAlert(data) {
+      return data.keys().hasAll(['streetId', 'level', 'messageEn', 'messageTa', 'visibility', 'createdAt'])
+        && data.keys().hasOnly(['streetId', 'level', 'messageEn', 'messageTa', 'visibility', 'createdAt'])
+        && isValidId(data.streetId)
+        && data.level in ['watch', 'warning', 'danger', 'all_clear']
+        && data.messageEn is string && data.messageEn.size() >= 5 && data.messageEn.size() <= 500
+        && data.messageTa is string && data.messageTa.size() >= 5 && data.messageTa.size() <= 500
+        && data.visibility == 'public'
+        && data.createdAt is timestamp;
+    }
+
+    function isValidSubscription(data) {
+      return data.keys().hasAll(['userId', 'streetId', 'streetName', 'channels', 'radiusMeters', 'active', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'streetId', 'streetName', 'channels', 'radiusMeters', 'active', 'createdAt', 'updatedAt'])
+        && isValidId(data.userId)
+        && isValidId(data.streetId)
+        && data.streetName is string && data.streetName.size() >= 1 && data.streetName.size() <= 120
+        && data.channels is list && data.channels.size() >= 1 && data.channels.size() <= 4
+        && data.channels[0] is string && data.channels[0].size() <= 20
+        && data.radiusMeters is number && data.radiusMeters >= 50 && data.radiusMeters <= 10000
+        && data.active is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll(['authorId', 'streetId', 'streetName', 'severity', 'description', 'lat', 'lng', 'status', 'confirmations', 'visibility', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['authorId', 'streetId', 'streetName', 'severity', 'description', 'photoUrl', 'lat', 'lng', 'status', 'confirmations', 'visibility', 'createdAt', 'updatedAt'])
+        && isValidId(data.authorId)
+        && isValidId(data.streetId)
+        && data.streetName is string && data.streetName.size() >= 2 && data.streetName.size() <= 120
+        && data.severity in ['ankle', 'knee', 'waist', 'blocked_drain']
+        && data.description is string && data.description.size() >= 4 && data.description.size() <= 400
+        && (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500))
+        && data.lat is number && data.lat >= -90 && data.lat <= 90
+        && data.lng is number && data.lng >= -180 && data.lng <= 180
+        && data.status in ['unverified', 'verified', 'resolved']
+        && data.confirmations is number && data.confirmations >= 1 && data.confirmations <= 10000
+        && data.visibility == 'public'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /test/{docId} {
+      allow get: if docId == 'connection';
+    }
+
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create, update, delete: if isValidId(userId) && isAdmin();
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) && isVerified() && isOwner(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().role == 'resident'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId) && isVerified() && isValidUserProfile(incoming()) && (
+        (isAdmin() && incoming().uid == existing().uid && incoming().createdAt == existing().createdAt && incoming().updatedAt == request.time) ||
+        (isOwner(userId)
+          && incoming().uid == existing().uid
+          && incoming().role == existing().role
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'preferredLang', 'updatedAt']))
+      );
+      allow delete: if isValidId(userId) && isAdmin();
+
+      match /private/{docId} {
+        allow get: if isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin());
+        allow create, update: if isValidId(userId) && isValidId(docId) && isVerified() && (isOwner(userId) || isAdmin())
+          && isValidPrivateContact(incoming())
+          && incoming().updatedAt == request.time;
+        allow delete: if isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
+      }
+    }
+
+    match /streets/{streetId} {
+      allow get: if isValidId(streetId);
+      allow list: if existing().visibility == 'public';
+      allow create, update: if isValidId(streetId) && isAdmin() && isValidStreet(incoming()) && incoming().updatedAt == request.time;
+      allow delete: if isValidId(streetId) && isAdmin();
+    }
+
+    match /sensors/{sensorId} {
+      allow get: if isValidId(sensorId);
+      allow list: if existing().visibility == 'public';
+      allow create, update: if isValidId(sensorId) && isAdmin() && isValidSensor(incoming())
+        && exists(/databases/$(database)/documents/streets/$(incoming().streetId))
+        && incoming().updatedAt == request.time;
+      allow delete: if isValidId(sensorId) && isAdmin();
+    }
+
+    match /readings/{readingId} {
+      allow get: if isValidId(readingId);
+      allow list: if existing().visibility == 'public';
+      allow create: if isValidId(readingId) && isAdmin() && isValidReading(incoming())
+        && exists(/databases/$(database)/documents/streets/$(incoming().streetId))
+        && exists(/databases/$(database)/documents/sensors/$(incoming().sensorId))
+        && incoming().createdAt == request.time;
+      allow update, delete: if isValidId(readingId) && isAdmin();
+    }
+
+    match /alerts/{alertId} {
+      allow get: if isValidId(alertId);
+      allow list: if existing().visibility == 'public';
+      allow create: if isValidId(alertId) && isAdmin() && isValidAlert(incoming())
+        && exists(/databases/$(database)/documents/streets/$(incoming().streetId))
+        && incoming().createdAt == request.time;
+      allow update, delete: if isValidId(alertId) && isAdmin();
+    }
+
+    match /subscriptions/{subscriptionId} {
+      allow get: if isValidId(subscriptionId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow create: if isValidId(subscriptionId) && isVerified() && isValidSubscription(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(subscriptionId) && isVerified() && isValidSubscription(incoming()) && (
+        isAdmin() ||
+        (existing().userId == request.auth.uid
+          && incoming().userId == existing().userId
+          && incoming().streetId == existing().streetId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['channels', 'radiusMeters', 'active', 'updatedAt']))
+      );
+      allow delete: if isValidId(subscriptionId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+    }
+
+    match /reports/{reportId} {
+      allow get: if isValidId(reportId);
+      allow list: if existing().visibility == 'public';
+      allow create: if isValidId(reportId) && isVerified() && isValidReport(incoming())
+        && incoming().authorId == request.auth.uid
+        && incoming().status == 'unverified'
+        && incoming().confirmations == 1
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(reportId) && isVerified() && isValidReport(incoming()) && (
+        (isAdmin() && incoming().authorId == existing().authorId && incoming().createdAt == existing().createdAt && incoming().updatedAt == request.time) ||
+        (existing().status != 'resolved'
+          && incoming().authorId == existing().authorId
+          && incoming().streetId == existing().streetId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().confirmations == existing().confirmations + 1
+          && incoming().diff(existing()).affectedKeys().hasOnly(['confirmations', 'updatedAt']))
+      );
+      allow delete: if isValidId(reportId) && isAdmin();
+    }
+  }
+}

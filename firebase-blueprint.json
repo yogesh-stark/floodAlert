@@ -1,0 +1,160 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Public profile and role assignment for a StreetFlood Alert user.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "role": { "type": "string", "enum": ["resident", "reporter", "admin"] },
+        "preferredLang": { "type": "string", "enum": ["en", "ta"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "role", "preferredLang", "createdAt", "updatedAt"]
+    },
+    "UserPrivateContact": {
+      "title": "UserPrivateContact",
+      "description": "PII contact and alert delivery preferences isolated from public profiles.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "fcmToken": { "type": "string", "maxLength": 512 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "updatedAt"]
+    },
+    "Street": {
+      "title": "Street",
+      "description": "Flood-monitored street corridor with configurable drain capacity and thresholds.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "area": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "drainDepthCm": { "type": "number" },
+        "watchPct": { "type": "number" },
+        "warningPct": { "type": "number" },
+        "dangerPct": { "type": "number" },
+        "visibility": { "type": "string", "enum": ["public"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "area", "drainDepthCm", "watchPct", "warningPct", "dangerPct", "visibility", "updatedAt"]
+    },
+    "Sensor": {
+      "title": "Sensor",
+      "description": "IoT sensor unit (ESP32 ultrasonic water-level and tipping-bucket rain gauge).",
+      "type": "object",
+      "properties": {
+        "streetId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "hardwareType": { "type": "string", "maxLength": 80 },
+        "status": { "type": "string", "enum": ["online", "offline", "low_battery"] },
+        "batteryPct": { "type": "number" },
+        "visibility": { "type": "string", "enum": ["public"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["streetId", "hardwareType", "status", "batteryPct", "visibility", "updatedAt"]
+    },
+    "Reading": {
+      "title": "Reading",
+      "description": "Time-series rain gauge and drain water-level reading.",
+      "type": "object",
+      "properties": {
+        "streetId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sensorId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "waterLevelCm": { "type": "number" },
+        "rainfallMmHr": { "type": "number" },
+        "riskScore": { "type": "number" },
+        "visibility": { "type": "string", "enum": ["public"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["streetId", "sensorId", "waterLevelCm", "rainfallMmHr", "riskScore", "visibility", "createdAt"]
+    },
+    "Alert": {
+      "title": "Alert",
+      "description": "Bilingual street-level early warning or all-clear notice.",
+      "type": "object",
+      "properties": {
+        "streetId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "level": { "type": "string", "enum": ["watch", "warning", "danger", "all_clear"] },
+        "messageEn": { "type": "string", "minLength": 5, "maxLength": 500 },
+        "messageTa": { "type": "string", "minLength": 5, "maxLength": 500 },
+        "visibility": { "type": "string", "enum": ["public"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["streetId", "level", "messageEn", "messageTa", "visibility", "createdAt"]
+    },
+    "Subscription": {
+      "title": "Subscription",
+      "description": "Resident alert subscription for specific streets and notification channels.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "streetId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "streetName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "channels": { "type": "array" },
+        "radiusMeters": { "type": "number" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "streetId", "streetName", "channels", "radiusMeters", "active", "createdAt", "updatedAt"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "Community-submitted waterlogging report with severity and verification state.",
+      "type": "object",
+      "properties": {
+        "authorId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "streetId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "streetName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "severity": { "type": "string", "enum": ["ankle", "knee", "waist", "blocked_drain"] },
+        "description": { "type": "string", "minLength": 4, "maxLength": 400 },
+        "photoUrl": { "type": "string", "maxLength": 500 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "status": { "type": "string", "enum": ["unverified", "verified", "resolved"] },
+        "confirmations": { "type": "number" },
+        "visibility": { "type": "string", "enum": ["public"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["authorId", "streetId", "streetName", "severity", "description", "lat", "lng", "status", "confirmations", "visibility", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Public user profile and non-sensitive display settings."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateContact" },
+      "description": "Isolated PII contact details (email, phone, FCM token)."
+    },
+    "/streets/{streetId}": {
+      "schema": { "$ref": "#/entities/Street" },
+      "description": "Monitored street metadata and threshold configuration."
+    },
+    "/sensors/{sensorId}": {
+      "schema": { "$ref": "#/entities/Sensor" },
+      "description": "IoT rain gauge and ultrasonic sensor registry."
+    },
+    "/readings/{readingId}": {
+      "schema": { "$ref": "#/entities/Reading" },
+      "description": "Time-series water level and rainfall measurements."
+    },
+    "/alerts/{alertId}": {
+      "schema": { "$ref": "#/entities/Alert" },
+      "description": "Published bilingual flood alerts and all-clear notices."
+    },
+    "/subscriptions/{subscriptionId}": {
+      "schema": { "$ref": "#/entities/Subscription" },
+      "description": "Private resident street alert subscriptions."
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/Report" },
+      "description": "Community waterlogging reports and admin verification state."
+    }
+  }
+}
