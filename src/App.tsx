@@ -1,18 +1,23 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Bell,
   CloudRain,
+  Gamepad2,
   Map as MapIcon,
   RotateCcw,
   Shield,
   ShieldCheck,
+  Sparkles,
   UserCheck,
   X,
 } from 'lucide-react';
 import { AdminDashboardView } from './components/AdminDashboardView.tsx';
 import { AlertsRoutesView } from './components/AlertsRoutesView.tsx';
 import { CommunityReportView } from './components/CommunityReportView.tsx';
+import { FloodAICenterView } from './components/FloodAICenterView.tsx';
+import { FloodRescueGame3D } from './components/FloodRescueGame3D.tsx';
+import { GoogleStreetMap } from './components/GoogleStreetMap.tsx';
 import { HeroLandingSection } from './components/HeroLandingSection.tsx';
 import { OfflineIndicator } from './components/OfflineIndicator.tsx';
 import { PreparednessView } from './components/PreparednessView.tsx';
@@ -24,7 +29,7 @@ import { useFloodData } from './hooks/useFloodSocket.ts';
 import { t } from './lib/i18n.ts';
 import type { Language, UserRole } from './types/flood.ts';
 
-type ActiveTab = 'map' | 'alerts' | 'report' | 'prepare' | 'admin';
+type ActiveTab = 'map' | 'ai' | 'game' | 'alerts' | 'report' | 'prepare' | 'admin';
 
 function distanceSq(lat1: number, lng1: number, lat2: number, lng2: number): number {
   return (lat1 - lat2) ** 2 + (lng1 - lng2) ** 2;
@@ -39,8 +44,35 @@ export default function App() {
   const [showSafeRoute, setShowSafeRoute] = useState(true);
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [locationNotice, setLocationNotice] = useState<string | null>(null);
+  const [mapsApiKey, setMapsApiKey] = useState<string>(() => import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '');
+  const [mapEngine, setMapEngine] = useState<'google' | 'osm'>(() =>
+    import.meta.env.VITE_GOOGLE_MAPS_API_KEY ? 'google' : 'osm'
+  );
+  const [gmpQuotaExceeded, setGmpQuotaExceeded] = useState(false);
 
   const mapWorkspaceRef = useRef<HTMLDivElement | null>(null);
+
+  // Listen for Case A Google Maps Quota Defense events & check server runtime Maps key bridge
+  useEffect(() => {
+    const onQuotaExceeded = () => setGmpQuotaExceeded(true);
+    window.addEventListener('gmp-quota-exceeded', onQuotaExceeded);
+
+    if (!mapsApiKey) {
+      fetch('/api/config/maps')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((cfg: { mapsApiKey?: string } | null) => {
+          if (cfg?.mapsApiKey) {
+            setMapsApiKey(cfg.mapsApiKey);
+            setMapEngine('google');
+          }
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      window.removeEventListener('gmp-quota-exceeded', onQuotaExceeded);
+    };
+  }, [mapsApiKey]);
 
   const {
     streets,
@@ -55,6 +87,10 @@ export default function App() {
     latestToastAlert,
     dismissToastAlert,
     user,
+    authBusy,
+    authError,
+    authNeedsNewTab,
+    clearAuthError,
     subscriptions,
     signInWithGoogle,
     signOutUser,
@@ -111,13 +147,21 @@ export default function App() {
   };
 
   const handleSimulateHeavyRain = async () => {
-    await fetch('/api/simulate/heavy-rain', { method: 'POST' });
+    try {
+      await fetch('/api/simulate/heavy-rain', { method: 'POST' });
+    } catch {
+      // Non-fatal if offline; WS state handles UI
+    }
     setActiveTab('map');
     mapWorkspaceRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   const handleResetDemo = async () => {
-    await fetch('/api/simulate/reset', { method: 'POST' });
+    try {
+      await fetch('/api/simulate/reset', { method: 'POST' });
+    } catch {
+      // Non-fatal if offline
+    }
   };
 
   const handleJumpToMap = () => {
@@ -138,6 +182,8 @@ export default function App() {
 
   const navItems: { id: ActiveTab; label: string }[] = [
     { id: 'map', label: copy.navMap },
+    { id: 'ai', label: copy.navAI },
+    { id: 'game', label: copy.navGame },
     { id: 'alerts', label: copy.navAlerts },
     { id: 'report', label: copy.navReport },
     { id: 'prepare', label: copy.navPrepare },
@@ -146,9 +192,27 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 pb-16 text-slate-900 md:pb-0">
-      {/* Top Bar Contract: Exactly 3 zones separated by gap-8 */}
-      <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur-md">
-        <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-8 px-4 sm:px-6 lg:px-8">
+      {/* Case A Demo Key Client-Side Quota Defense Banner */}
+      {gmpQuotaExceeded && (
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-[1100] shadow-sm">
+          <span>
+            Google Maps Platform quota reached. If you are the app owner, visit{' '}
+            <a
+              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-semibold text-amber-950 hover:text-amber-800"
+            >
+              maps developer site
+            </a>{' '}
+            for instructions to update your account.
+          </span>
+        </div>
+      )}
+
+      {/* Top Bar Contract: Exactly 3 zones separated by gap-8 on desktop */}
+      <header className="sticky top-0 z-[1000] border-b border-slate-200 bg-white/95 backdrop-blur-md">
+        <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-2 px-3 sm:gap-4 sm:px-6 md:gap-6 lg:px-8">
           {/* Zone 1: Single text wordmark */}
           <a
             href="#top"
@@ -157,13 +221,13 @@ export default function App() {
               setActiveTab('map');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className="font-display text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0"
+            className="font-display text-base font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 sm:text-lg"
           >
             {copy.brand}
           </a>
 
-          {/* Zone 2: 5 concise single-line text nav links */}
-          <nav className="hidden items-center gap-6 md:flex" aria-label="Primary navigation">
+          {/* Zone 2: Concise single-line text nav links */}
+          <nav className="hidden items-center gap-4 lg:gap-5 md:flex" aria-label="Primary navigation">
             {navItems.map((item) => (
               <button
                 key={item.id}
@@ -186,17 +250,28 @@ export default function App() {
               <button
                 type="button"
                 onClick={signOutUser}
-                className="min-h-[40px] rounded-lg border border-slate-300 bg-white px-3.5 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 whitespace-nowrap shrink-0"
+                className="min-h-[44px] touch-manipulation rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 active:bg-slate-100 whitespace-nowrap shrink-0 md:min-h-[40px] sm:px-3.5"
               >
-                {copy.signOut} ({user.displayName?.split(' ')[0] || 'User'})
+                <span className="sm:hidden">{copy.signOut}</span>
+                <span className="hidden sm:inline">
+                  {copy.signOut} ({user.displayName?.split(' ')[0] || 'User'})
+                </span>
               </button>
             ) : (
               <button
                 type="button"
+                disabled={authBusy}
                 onClick={signInWithGoogle}
-                className="min-h-[40px] rounded-lg bg-[#0F4C81] px-4 py-1.5 text-xs font-semibold text-white hover:bg-[#0c3c66] whitespace-nowrap shrink-0"
+                className="min-h-[44px] touch-manipulation rounded-lg bg-[#0F4C81] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#0c3c66] active:bg-[#092f52] disabled:opacity-60 whitespace-nowrap shrink-0 md:min-h-[40px] sm:px-4"
               >
-                {copy.signInGoogle}
+                {authBusy ? (
+                  lang === 'ta' ? 'உள்நுழைகிறது...' : 'Signing in...'
+                ) : (
+                  <>
+                    <span className="sm:hidden">{lang === 'ta' ? 'உள்நுழை' : 'Sign In'}</span>
+                    <span className="hidden sm:inline">{copy.signInGoogle}</span>
+                  </>
+                )}
               </button>
             )}
           </div>
@@ -287,6 +362,38 @@ export default function App() {
         </div>
       </div>
 
+      {/* Auth Notice Banner (e.g. popup closed/blocked on mobile) */}
+      {authError && (
+        <div className="mx-auto max-w-7xl px-4 pt-4 sm:px-6 lg:px-8">
+          <div
+            role="status"
+            className="flex flex-col justify-between gap-3 rounded-xl border border-slate-300 bg-white px-4 py-3 text-xs font-medium text-slate-700 shadow-sm sm:flex-row sm:items-center sm:gap-4"
+          >
+            <span className="leading-relaxed">{authError}</span>
+            <div className="flex items-center justify-end gap-2 shrink-0">
+              {authNeedsNewTab && typeof window !== 'undefined' && (
+                <a
+                  href={window.location.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex min-h-[40px] items-center rounded-lg bg-[#0F4C81] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#0c3c66] whitespace-nowrap"
+                >
+                  {lang === 'ta' ? 'புதிய தாவலில் உள்நுழையவும்' : 'Open Full Tab to Sign In'}
+                </a>
+              )}
+              <button
+                type="button"
+                onClick={clearAuthError}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100"
+                aria-label="Dismiss authentication notice"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Live Toast Notification Banner on Real-Time Alert */}
       {latestToastAlert && (
         <div className="mx-auto max-w-7xl px-4 pt-4 sm:px-6 lg:px-8">
@@ -330,9 +437,13 @@ export default function App() {
 
             <section ref={mapWorkspaceRef} className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
               {locationNotice && (
-                <div className="mb-4 flex items-center justify-between rounded-xl border border-sky-200 bg-sky-50 px-4 py-2.5 text-xs font-medium text-sky-900">
+                <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-sky-200 bg-sky-50 px-4 py-2.5 text-xs font-medium text-sky-900">
                   <span>{locationNotice}</span>
-                  <button type="button" onClick={() => setLocationNotice(null)} className="text-sky-700 hover:underline">
+                  <button
+                    type="button"
+                    onClick={() => setLocationNotice(null)}
+                    className="min-h-[36px] shrink-0 px-2 font-semibold text-sky-700 hover:underline"
+                  >
                     Dismiss
                   </button>
                 </div>
@@ -341,10 +452,51 @@ export default function App() {
               {/* Map + Inspector Split */}
               <div className="grid gap-6 lg:grid-cols-12">
                 <div className="space-y-4 lg:col-span-7">
+                  {/* Map Engine Switcher (Google Maps Platform vs. OpenStreetMap) */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2">
+                    <div className="text-xs font-semibold text-slate-700">
+                      {lang === 'ta' ? 'வரைபடத் தளம்' : 'Interactive Map Provider'}
+                    </div>
+                    <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-100 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setMapEngine('google')}
+                        className={`min-h-[32px] rounded-md px-2.5 text-xs font-semibold transition-colors ${
+                          mapEngine === 'google' ? 'bg-[#0F4C81] text-white' : 'text-slate-700 hover:bg-white'
+                        }`}
+                      >
+                        Google Maps
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMapEngine('osm')}
+                        className={`min-h-[32px] rounded-md px-2.5 text-xs font-semibold transition-colors ${
+                          mapEngine === 'osm' ? 'bg-[#0F4C81] text-white' : 'text-slate-700 hover:bg-white'
+                        }`}
+                      >
+                        OpenStreetMap
+                      </button>
+                    </div>
+                  </div>
+
                   {loading && streets.length === 0 ? (
                     <div className="flex h-[430px] items-center justify-center rounded-2xl border border-slate-200 bg-white text-sm text-slate-500">
                       Loading live street sensor map...
                     </div>
+                  ) : mapEngine === 'google' ? (
+                    <GoogleStreetMap
+                      apiKey={mapsApiKey}
+                      streets={streets}
+                      selectedStreetId={selectedStreet?.id ?? null}
+                      onSelectStreet={setSelectedStreetId}
+                      reports={reports}
+                      shelters={shelters}
+                      userLocation={userLocation}
+                      showSafeRoute={showSafeRoute}
+                      lang={lang}
+                      onRequestLocation={handleUseMyLocation}
+                      onFallbackToOsm={() => setMapEngine('osm')}
+                    />
                   ) : (
                     <StreetMap
                       streets={streets}
@@ -414,6 +566,24 @@ export default function App() {
           </>
         )}
 
+        {activeTab === 'ai' && (
+          <FloodAICenterView
+            streets={streets}
+            selectedStreet={selectedStreet}
+            userLocation={userLocation}
+            lang={lang}
+            onRequestLocation={handleUseMyLocation}
+          />
+        )}
+
+        {activeTab === 'game' && (
+          <FloodRescueGame3D
+            streets={streets}
+            lang={lang}
+            onExit={() => setActiveTab('map')}
+          />
+        )}
+
         {activeTab === 'alerts' && (
           <AlertsRoutesView
             streets={streets}
@@ -431,6 +601,7 @@ export default function App() {
             streets={streets}
             reports={reports}
             role={role}
+            userId={user?.uid || ''}
             userName={user?.displayName || ''}
             lang={lang}
           />
@@ -454,15 +625,17 @@ export default function App() {
       {/* Fixed Mobile Bottom Tab Bar (Thumb Zone) */}
       <nav
         aria-label="Mobile navigation"
-        className="fixed inset-x-0 bottom-0 z-40 grid h-14 grid-cols-5 border-t border-slate-200 bg-white/95 backdrop-blur-md md:hidden"
+        className="fixed inset-x-0 bottom-0 z-[1000] grid h-14 grid-cols-7 border-t border-slate-200 bg-white/95 backdrop-blur-md md:hidden"
       >
         {(
           [
-            { id: 'map', label: 'Map', icon: MapIcon },
-            { id: 'alerts', label: 'Alerts', icon: Bell },
-            { id: 'report', label: 'Report', icon: AlertTriangle },
-            { id: 'prepare', label: 'Prepare', icon: ShieldCheck },
-            { id: 'admin', label: 'Admin', icon: Shield },
+            { id: 'map', label: lang === 'ta' ? 'வரைபடம்' : 'Map', icon: MapIcon },
+            { id: 'ai', label: lang === 'ta' ? 'AI' : 'AI', icon: Sparkles },
+            { id: 'game', label: lang === 'ta' ? '3D' : '3D', icon: Gamepad2 },
+            { id: 'alerts', label: lang === 'ta' ? 'எச்சரிக்கை' : 'Alerts', icon: Bell },
+            { id: 'report', label: lang === 'ta' ? 'புகார்' : 'Report', icon: AlertTriangle },
+            { id: 'prepare', label: lang === 'ta' ? 'தயார்' : 'Prep', icon: ShieldCheck },
+            { id: 'admin', label: lang === 'ta' ? 'நிர்வாகம்' : 'Admin', icon: Shield },
           ] as const
         ).map((tab) => {
           const Icon = tab.icon;
@@ -472,12 +645,12 @@ export default function App() {
               key={tab.id}
               type="button"
               onClick={() => setActiveTab(tab.id)}
-              className={`flex flex-col items-center justify-center gap-0.5 text-[10px] font-semibold ${
+              className={`flex min-h-[44px] touch-manipulation flex-col items-center justify-center gap-0.5 text-[10px] font-semibold ${
                 active ? 'text-[#0F4C81]' : 'text-slate-500'
               }`}
             >
               <Icon className="h-5 w-5" />
-              <span>{tab.label}</span>
+              <span className="truncate max-w-full px-1">{tab.label}</span>
             </button>
           );
         })}

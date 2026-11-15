@@ -45,6 +45,7 @@ export default defineConfig(() => {
         },
         workbox: {
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
+          navigateFallbackDenylist: [/^\/__/, /^\/api/, /^\/ws/, /^\/ws-live/],
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,jpg}'],
           runtimeCaching: [
             {

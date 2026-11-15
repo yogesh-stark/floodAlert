@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Camera, CheckCircle2, Clock, MapPin, ThumbsUp, Upload } from 'lucide-react';
 import { ASSETS, resolveReportPhoto } from '../lib/assets.ts';
 import { SEVERITY_LABELS, t } from '../lib/i18n.ts';
@@ -8,6 +8,7 @@ interface CommunityReportViewProps {
   streets: Street[];
   reports: CommunityReport[];
   role: UserRole;
+  userId?: string;
   userName: string;
   lang: Language;
   onReportSubmitted?: () => void;
@@ -17,6 +18,7 @@ export const CommunityReportView: React.FC<CommunityReportViewProps> = ({
   streets,
   reports,
   role,
+  userId,
   userName,
   lang,
   onReportSubmitted,
@@ -27,7 +29,14 @@ export const CommunityReportView: React.FC<CommunityReportViewProps> = ({
   const [description, setDescription] = useState('');
   const [photoPreview, setPhotoPreview] = useState<string>('asset:report_anna');
   const [submitting, setSubmitting] = useState(false);
+  const [busyReportId, setBusyReportId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (streets.length > 0 && !streets.some((s) => s.id === streetId)) {
+      setStreetId(streets[0].id);
+    }
+  }, [streets, streetId]);
 
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -53,7 +62,7 @@ export const CommunityReportView: React.FC<CommunityReportViewProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          authorId: role === 'reporter' ? 'volunteer-reporter' : 'resident-user',
+          authorId: userId || (role === 'reporter' ? 'volunteer-reporter' : 'resident-user'),
           authorName: userName || (role === 'reporter' ? 'Volunteer Reporter' : 'Neighborhood Resident'),
           streetId,
           severity,
@@ -78,11 +87,22 @@ export const CommunityReportView: React.FC<CommunityReportViewProps> = ({
   };
 
   const handleReportAction = async (reportId: string, action: 'confirm' | 'verify' | 'resolve') => {
-    await fetch(`/api/reports/${reportId}/verify`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
-    });
+    if (busyReportId) return;
+    setBusyReportId(reportId);
+    try {
+      const resp = await fetch(`/api/reports/${reportId}/verify`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      if (!resp.ok) {
+        setFeedback('Unable to update report status right now.');
+      }
+    } catch {
+      setFeedback('Network error while updating report status.');
+    } finally {
+      setBusyReportId(null);
+    }
   };
 
   return (
@@ -272,8 +292,9 @@ export const CommunityReportView: React.FC<CommunityReportViewProps> = ({
                       {rep.status !== 'resolved' && (
                         <button
                           type="button"
+                          disabled={busyReportId === rep.id}
                           onClick={() => handleReportAction(rep.id, 'confirm')}
-                          className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-800 hover:bg-slate-100"
+                          className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:opacity-60"
                         >
                           <ThumbsUp className="h-3.5 w-3.5 text-[#0F4C81]" />
                           <span>Confirm Sighting (+1)</span>
@@ -282,8 +303,9 @@ export const CommunityReportView: React.FC<CommunityReportViewProps> = ({
                       {role === 'admin' && rep.status === 'unverified' && (
                         <button
                           type="button"
+                          disabled={busyReportId === rep.id}
                           onClick={() => handleReportAction(rep.id, 'verify')}
-                          className="min-h-[38px] rounded-lg bg-emerald-700 px-3 text-xs font-semibold text-white hover:bg-emerald-800"
+                          className="min-h-[40px] rounded-lg bg-emerald-700 px-3 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
                         >
                           Admin Verify
                         </button>
@@ -291,8 +313,9 @@ export const CommunityReportView: React.FC<CommunityReportViewProps> = ({
                       {role === 'admin' && rep.status !== 'resolved' && (
                         <button
                           type="button"
+                          disabled={busyReportId === rep.id}
                           onClick={() => handleReportAction(rep.id, 'resolve')}
-                          className="min-h-[38px] rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                          className="min-h-[40px] rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
                         >
                           Mark Cleared
                         </button>

@@ -60,23 +60,31 @@ export const HeroLandingSection: React.FC<HeroLandingSectionProps> = ({
                     aria-label={copy.searchPlaceholder}
                     className="h-12 w-full rounded-xl border border-slate-300 bg-slate-50 pr-4 pl-10 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0F4C81] focus:bg-white focus:outline-none"
                   />
-                  {matching.length > 0 && (
+                  {searchQuery.trim().length > 0 && (
                     <div className="absolute right-0 left-0 z-30 mt-1.5 max-h-60 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg">
-                      {matching.map((st) => (
-                        <button
-                          key={st.id}
-                          type="button"
-                          onClick={() => {
-                            onSelectStreet(st.id);
-                            onSearchChange('');
-                            onJumpToMap();
-                          }}
-                          className="flex min-h-[44px] w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-50"
-                        >
-                          <span className="font-medium text-slate-900">{lang === 'ta' ? st.nameTa : st.name}</span>
-                          <span className="font-mono text-xs text-slate-500 tabular-nums">{st.waterPct}% drain</span>
-                        </button>
-                      ))}
+                      {matching.length > 0 ? (
+                        matching.map((st) => (
+                          <button
+                            key={st.id}
+                            type="button"
+                            onClick={() => {
+                              onSelectStreet(st.id);
+                              onSearchChange('');
+                              onJumpToMap();
+                            }}
+                            className="flex min-h-[44px] w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-50"
+                          >
+                            <span className="font-medium text-slate-900">{lang === 'ta' ? st.nameTa : st.name}</span>
+                            <span className="font-mono text-xs text-slate-500 tabular-nums">{st.waterPct}% drain</span>
+                          </button>
+                        ))
+                      ) : (
+                        <div className="px-3 py-2.5 text-xs text-slate-500">
+                          {lang === 'ta'
+                            ? 'பொருந்தும் தெருக்கள் எதுவும் இல்லை.'
+                            : 'No monitored streets match your search.'}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

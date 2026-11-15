@@ -201,7 +201,7 @@ export const StreetMap: React.FC<StreetMapProps> = ({
   }, [selectedStreetId, streets]);
 
   return (
-    <div className="relative flex h-[430px] w-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 md:h-[560px]">
+    <div className="relative isolate flex h-[430px] w-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 md:h-[560px]">
       <div ref={mapContainerRef} className="h-full w-full" aria-label="Interactive street flood risk map" />
 
       {/* Top-left map layer controls */}

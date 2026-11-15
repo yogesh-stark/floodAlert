@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
+import {
+  getRedirectResult,
+  onAuthStateChanged,
+  signInWithPopup,
+  signInWithRedirect,
+  signOut,
+  type User,
+} from 'firebase/auth';
 import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
   onSnapshot,
   query,
   serverTimestamp,
   setDoc,
+  updateDoc,
   where,
 } from 'firebase/firestore';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../lib/firebase.ts';
@@ -44,6 +53,9 @@ export function useFloodData(lang: Language) {
   const [loading, setLoading] = useState(true);
   const [latestToastAlert, setLatestToastAlert] = useState<FloodAlert | null>(null);
   const [user, setUser] = useState<User | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authNeedsNewTab, setAuthNeedsNewTab] = useState(false);
   const [subscriptions, setSubscriptions] = useState<StreetSubscription[]>(() => {
     try {
       const raw = localStorage.getItem(LOCAL_SUBS_KEY);
@@ -55,38 +67,60 @@ export function useFloodData(lang: Language) {
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  const langRef = useRef(lang);
+  langRef.current = lang;
 
-  // Firebase Auth listener
+  // Firebase Auth listener + mobile redirect result completion
   useEffect(() => {
+    getRedirectResult(auth).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : null;
+      if (msg) setAuthError(msg);
+    });
+
     const unsub = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       if (currentUser) {
-        // Ensure public user profile exists in Firestore
+        setAuthError(null);
+        setAuthNeedsNewTab(false);
+        // Ensure public user profile exists in Firestore without mutating immutable createdAt
         try {
           const userRef = doc(db, 'users', currentUser.uid);
-          await setDoc(
-            userRef,
-            {
+          const snap = await getDoc(userRef);
+          if (!snap.exists()) {
+            await setDoc(userRef, {
               uid: currentUser.uid,
               displayName: (currentUser.displayName || 'Resident').slice(0, 100),
               role: 'resident',
-              preferredLang: lang,
+              preferredLang: langRef.current,
               createdAt: serverTimestamp(),
               updatedAt: serverTimestamp(),
-            },
-            { merge: true }
-          );
+            });
+          } else {
+            await updateDoc(userRef, {
+              displayName: (currentUser.displayName || 'Resident').slice(0, 100),
+              preferredLang: langRef.current,
+              updatedAt: serverTimestamp(),
+            });
+          }
         } catch {
-          // Non-fatal if user doc already exists with immutable createdAt
+          // Non-fatal if user email is unverified or profile sync is skipped
         }
       }
     });
     return () => unsub();
-  }, [lang]);
+  }, []);
 
-  // Firestore real-time subscriptions when authenticated
+  // Firestore real-time subscriptions when authenticated; restore guest subs on sign-out
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      try {
+        const raw = localStorage.getItem(LOCAL_SUBS_KEY);
+        setSubscriptions(raw ? (JSON.parse(raw) as StreetSubscription[]) : []);
+      } catch {
+        setSubscriptions([]);
+      }
+      return;
+    }
     const q = query(collection(db, 'subscriptions'), where('userId', '==', user.uid));
     const unsub = onSnapshot(
       q,
@@ -230,8 +264,8 @@ export function useFloodData(lang: Language) {
             // Browser Notification if granted
             if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
               try {
-                new Notification(lang === 'ta' ? alert.titleTa : alert.titleEn, {
-                  body: lang === 'ta' ? alert.messageTa : alert.messageEn,
+                new Notification(langRef.current === 'ta' ? alert.titleTa : alert.titleEn, {
+                  body: langRef.current === 'ta' ? alert.messageTa : alert.messageEn,
                   icon: '/pwa-192x192.png',
                 });
               } catch {
@@ -246,6 +280,8 @@ export function useFloodData(lang: Language) {
             setReports((prev) => prev.map((r) => (r.id === report.id ? report : r)));
           } else if (msg.event === 'simulation:status') {
             setSimulation(msg.payload as SimulationState);
+          } else if (msg.event === 'forecast:update') {
+            setForecast(msg.payload as WeatherForecast);
           }
         } catch {
           // Ignore malformed message
@@ -269,14 +305,94 @@ export function useFloodData(lang: Language) {
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       wsRef.current?.close();
     };
-  }, [lang]);
+  }, []);
 
   const signInWithGoogle = async () => {
-    await signInWithPopup(auth, googleProvider);
+    if (authBusy) return;
+    setAuthBusy(true);
+    setAuthError(null);
+    setAuthNeedsNewTab(false);
+
+    const startedAt = Date.now();
+    const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
+    const isStandalonePWA =
+      typeof window !== 'undefined' &&
+      (window.matchMedia('(display-mode: standalone)').matches ||
+        (window.navigator as unknown as { standalone?: boolean }).standalone === true);
+    const isMobileDevice =
+      typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
+    let timeoutId: number | undefined;
+
+    try {
+      // Standalone mobile PWAs block popups; use redirect when top-level standalone
+      if (isStandalonePWA && !isInIframe) {
+        await signInWithRedirect(auth, googleProvider);
+        return;
+      }
+
+      // Guard against mobile browsers hanging on suppressed popups while clearing timer cleanly
+      await Promise.race([
+        signInWithPopup(auth, googleProvider),
+        new Promise((_, reject) => {
+          timeoutId = window.setTimeout(() => reject({ code: 'auth/popup-timeout' }), 20000);
+        }),
+      ]);
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      const elapsedMs = Date.now() - startedAt;
+      const isFastMobileClosure = code === 'auth/popup-closed-by-user' && isMobileDevice && elapsedMs < 1800;
+      const isPopupBlockedLike =
+        code === 'auth/popup-blocked' ||
+        code === 'auth/operation-not-supported-in-this-environment' ||
+        code === 'auth/popup-timeout' ||
+        code === 'auth/internal-error' ||
+        isFastMobileClosure;
+
+      if (isPopupBlockedLike && !isInIframe) {
+        try {
+          await signInWithRedirect(auth, googleProvider);
+          return;
+        } catch (redirectErr) {
+          setAuthError(
+            redirectErr instanceof Error ? redirectErr.message : 'Unable to complete sign-in redirect.'
+          );
+        }
+      } else if (isPopupBlockedLike && isInIframe) {
+        setAuthNeedsNewTab(true);
+        setAuthError(
+          langRef.current === 'ta'
+            ? 'மொபைல் உலாவியில் பாப்-அப் தடுக்கப்பட்டுள்ளது. புதிய தாவலில் திறந்து உள்நுழையவும்.'
+            : 'Mobile browser blocked the embedded sign-in popup. Open in a full browser tab to sign in.'
+        );
+      } else if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        if (isInIframe && isMobileDevice) {
+          setAuthNeedsNewTab(true);
+        }
+        setAuthError(
+          langRef.current === 'ta'
+            ? 'Google உள்நுழைவு ரத்து செய்யப்பட்டது. மீண்டும் முயற்சிக்கவும்.'
+            : 'Sign-in was cancelled before completing. You can continue as a guest or try again.'
+        );
+      } else if (code === 'auth/unauthorized-domain') {
+        setAuthNeedsNewTab(true);
+        setAuthError('This preview domain is not authorized for Google Sign-In. Open in a standard tab or contact admin.');
+      } else {
+        setAuthError(err instanceof Error ? err.message : 'Unable to sign in with Google right now.');
+      }
+    } finally {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      setAuthBusy(false);
+    }
   };
 
   const signOutUser = async () => {
-    await signOut(auth);
+    setAuthError(null);
+    try {
+      await signOut(auth);
+    } catch (err: unknown) {
+      setAuthError(err instanceof Error ? err.message : 'Unable to sign out right now.');
+    }
   };
 
   const toggleStreetSubscription = async (
@@ -348,6 +464,13 @@ export function useFloodData(lang: Language) {
     latestToastAlert,
     dismissToastAlert: () => setLatestToastAlert(null),
     user,
+    authBusy,
+    authError,
+    authNeedsNewTab,
+    clearAuthError: () => {
+      setAuthError(null);
+      setAuthNeedsNewTab(false);
+    },
     subscriptions,
     signInWithGoogle,
     signOutUser,

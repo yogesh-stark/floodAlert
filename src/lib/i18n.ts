@@ -31,6 +31,8 @@ export const UI_COPY = {
   en: {
     brand: 'StreetFlood Alert',
     navMap: 'Live Map',
+    navAI: 'AI & Voice',
+    navGame: '3D Rescue',
     navAlerts: 'Alerts & Routes',
     navReport: 'Report',
     navPrepare: 'Prepare',
@@ -79,6 +81,8 @@ export const UI_COPY = {
   ta: {
     brand: 'StreetFlood Alert',
     navMap: 'நேரலை வரைபடம்',
+    navAI: 'AI & குரல்',
+    navGame: '3D மீட்பு',
     navAlerts: 'எச்சரிக்கை & பாதை',
     navReport: 'புகார்',
     navPrepare: 'முன்னெச்சரிக்கை',

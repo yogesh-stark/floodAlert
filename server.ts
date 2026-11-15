@@ -3,6 +3,8 @@ import express from 'express';
 import http from 'http';
 import path from 'path';
 import { WebSocket, WebSocketServer } from 'ws';
+import { type LiveServerMessage, Modality } from '@google/genai';
+import { getGeminiClient } from './server/geminiClient.ts';
 import {
   createInitialAlerts,
   createInitialReports,
@@ -21,10 +23,29 @@ import type {
   SensorNode,
   SimulationState,
   Street,
+  WeatherCondition,
   WeatherForecast,
 } from './src/types/flood.ts';
 
 const PORT = 3000;
+
+function formatGeminiError(err: unknown, fallback: string): { status: number; message: string; isQuota: boolean } {
+  const raw = err instanceof Error ? err.message : String(err || fallback);
+  const isQuota = /RESOURCE_EXHAUSTED|PERMISSION_DENIED|429|403|quota|rate-limit|billing|paid/i.test(raw);
+  if (isQuota) {
+    return {
+      status: 429,
+      message:
+        'Gemini API free-tier quota is temporarily exhausted. Add a billing-enabled GEMINI_API_KEY in Settings > Secrets to restore Search, Maps Grounding, Live Voice, and AI Image Studio.',
+      isQuota: true,
+    };
+  }
+  return {
+    status: 500,
+    message: raw.length > 260 ? fallback : raw,
+    isQuota: false,
+  };
+}
 
 let streets: Street[] = createInitialStreets();
 let sensors: SensorNode[] = createInitialSensors(streets);
@@ -40,8 +61,24 @@ let simulationState: SimulationState = {
 };
 
 let simulationTimer: NodeJS.Timeout | null = null;
+function mapWmoToCondition(weatherCode: number | undefined, currentPrecipMm: number, next3hPrecipMm: number): WeatherCondition {
+  if (typeof weatherCode === 'number') {
+    if (weatherCode >= 95) return 'thunderstorm';
+    if (weatherCode === 65 || weatherCode === 82 || weatherCode === 67) return 'heavy_rain';
+    if ((weatherCode >= 51 && weatherCode <= 63) || (weatherCode >= 80 && weatherCode <= 81)) return 'rainy';
+    if (weatherCode === 3 || weatherCode === 45 || weatherCode === 48) return 'cloudy';
+    if (weatherCode === 1 || weatherCode === 2) return 'partly_cloudy';
+    if (weatherCode === 0) return 'sunny';
+  }
+  if (currentPrecipMm >= 12 || next3hPrecipMm >= 30) return 'thunderstorm';
+  if (currentPrecipMm >= 5 || next3hPrecipMm >= 16) return 'heavy_rain';
+  if (currentPrecipMm >= 0.5 || next3hPrecipMm >= 2) return 'rainy';
+  return 'partly_cloudy';
+}
+
 let cachedForecast: WeatherForecast = {
   city: 'Chennai, IN',
+  condition: 'rainy',
   currentTempC: 27.4,
   currentPrecipMm: 4.2,
   next3hPrecipMm: 14.5,
@@ -62,13 +99,13 @@ async function refreshWeatherForecast(): Promise<WeatherForecast> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3500);
     const resp = await fetch(
-      'https://api.open-meteo.com/v1/forecast?latitude=13.0827&longitude=80.2707&hourly=precipitation,precipitation_probability&current=temperature_2m,precipitation&forecast_days=1',
+      'https://api.open-meteo.com/v1/forecast?latitude=13.0827&longitude=80.2707&hourly=precipitation,precipitation_probability&current=temperature_2m,precipitation,weather_code&forecast_days=1',
       { signal: controller.signal }
     );
     clearTimeout(timeout);
     if (!resp.ok) return cachedForecast;
     const data = (await resp.json()) as {
-      current?: { temperature_2m?: number; precipitation?: number };
+      current?: { temperature_2m?: number; precipitation?: number; weather_code?: number };
       hourly?: { time?: string[]; precipitation?: number[]; precipitation_probability?: number[] };
     };
     const currentHourIdx = Math.min(23, new Date().getHours());
@@ -83,16 +120,21 @@ async function refreshWeatherForecast(): Promise<WeatherForecast> {
         probPct: Math.round(hourlyProb[idx] ?? 20),
       };
     });
+    const currentPrecipMm = Number((data.current?.precipitation ?? 0).toFixed(1));
     const next3hPrecipMm = Number(
       next6
         .slice(0, 3)
         .reduce((acc, item) => acc + item.precipMm, 0)
         .toFixed(1)
     );
+    const condition = simulationState.active
+      ? 'thunderstorm'
+      : mapWmoToCondition(data.current?.weather_code, currentPrecipMm, next3hPrecipMm);
     cachedForecast = {
       city: 'Chennai, IN',
+      condition,
       currentTempC: Number((data.current?.temperature_2m ?? 28).toFixed(1)),
-      currentPrecipMm: Number((data.current?.precipitation ?? 0).toFixed(1)),
+      currentPrecipMm,
       next3hPrecipMm,
       hourly: next6,
       source: 'Open-Meteo Live API',
@@ -105,16 +147,21 @@ async function refreshWeatherForecast(): Promise<WeatherForecast> {
 }
 
 const app = express();
-app.use(express.json({ limit: '4mb' }));
+app.use(express.json({ limit: '12mb' }));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
+const liveWss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (request, socket, head) => {
   const reqUrl = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
   if (reqUrl.pathname === '/ws') {
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit('connection', ws, request);
+    });
+  } else if (reqUrl.pathname === '/ws-live') {
+    liveWss.handleUpgrade(request, socket, head, (ws) => {
+      liveWss.emit('connection', ws, request);
     });
   }
 });
@@ -144,6 +191,131 @@ wss.on('connection', (ws) => {
       timestamp: new Date().toISOString(),
     })
   );
+});
+
+liveWss.on('connection', async (clientWs, req) => {
+  const reqUrl = new URL(req.url || '/ws-live', `http://${req.headers.host || 'localhost'}`);
+  const lang = reqUrl.searchParams.get('lang') === 'ta' ? 'ta' : 'en';
+  const voiceName = reqUrl.searchParams.get('voice') || 'Zephyr';
+
+  let session: Awaited<ReturnType<ReturnType<typeof getGeminiClient>['live']['connect']>> | null = null;
+  let closed = false;
+
+  const streetSummary = streets
+    .map(
+      (s) =>
+        `- ${s.name} (${s.area}): ${s.riskLevel.toUpperCase()}, water ${s.currentWaterCm}/${s.drainDepthCm} cm (${s.waterPct}%), rain ${s.rainfallMmHr} mm/hr${s.etaDangerMinutes !== null ? `, danger ETA ~${s.etaDangerMinutes} min` : ''}, alternate route: ${s.alternateRouteEn}`
+    )
+    .join('\n');
+
+  const systemInstruction = `You are the StreetFlood Alert live emergency & neighborhood flood voice assistant for Chennai residents and volunteers.
+Keep responses calm, clear, concise (2-4 spoken sentences unless asked for details), and action-oriented.
+Speak primarily in ${lang === 'ta' ? 'Tamil (தமிழ்)' : 'English'}, or match whichever language the caller speaks.
+Current live street drain & rain telemetry right now:
+${streetSummary}
+
+Nearby high-ground relief shelters:
+${shelters.map((sh) => `- ${sh.name} (${sh.address}, ${sh.elevationStatus}, Tel: ${sh.phone})`).join('\n')}
+
+Always remind callers not to drive or walk through waist-deep flowing floodwater and to stay clear of downed electrical poles.`;
+
+  try {
+    const ai = getGeminiClient();
+    session = await ai.live.connect({
+      model: 'gemini-3.8-live',
+      config: {
+        responseModalities: [Modality.AUDIO],
+        speechConfig: {
+          voiceConfig: { prebuiltVoiceConfig: { voiceName } },
+        },
+        inputAudioTranscription: {},
+        outputAudioTranscription: {},
+        systemInstruction,
+      },
+      callbacks: {
+        onopen: () => {
+          if (!closed && clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({ status: 'connected' }));
+          }
+        },
+        onmessage: (message: LiveServerMessage) => {
+          if (closed || clientWs.readyState !== WebSocket.OPEN) return;
+          const content = message.serverContent;
+          if (content?.inputTranscription?.text) {
+            clientWs.send(JSON.stringify({ inputTranscript: content.inputTranscription.text }));
+          }
+          if (content?.outputTranscription?.text) {
+            clientWs.send(JSON.stringify({ outputTranscript: content.outputTranscription.text }));
+          }
+          for (const part of content?.modelTurn?.parts ?? []) {
+            if (part.inlineData?.data) {
+              clientWs.send(JSON.stringify({ audio: part.inlineData.data }));
+            }
+          }
+          if (content?.turnComplete) {
+            clientWs.send(JSON.stringify({ turnComplete: true }));
+          }
+          if (content?.interrupted) {
+            clientWs.send(JSON.stringify({ interrupted: true }));
+          }
+        },
+        onerror: (err: unknown) => {
+          if (!closed && clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(
+              JSON.stringify({
+                error: formatGeminiError(err, 'Live voice stream encountered an error.').message,
+              })
+            );
+          }
+        },
+        onclose: () => {
+          if (!closed && clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({ status: 'closed' }));
+          }
+        },
+      },
+    });
+  } catch (err: unknown) {
+    if (clientWs.readyState === WebSocket.OPEN) {
+      clientWs.send(
+        JSON.stringify({
+          error: formatGeminiError(
+            err,
+            'Unable to initialize Gemini Live voice session. Verify GEMINI_API_KEY in Settings > Secrets.'
+          ).message,
+        })
+      );
+      clientWs.close();
+    }
+    return;
+  }
+
+  clientWs.on('message', (raw) => {
+    if (!session || closed) return;
+    try {
+      const msg = JSON.parse(raw.toString()) as { audio?: string; text?: string };
+      if (msg.audio) {
+        session.sendRealtimeInput({
+          audio: { data: msg.audio, mimeType: 'audio/pcm;rate=16000' },
+        });
+      } else if (msg.text) {
+        session.sendRealtimeInput({
+          text: msg.text,
+        });
+      }
+    } catch {
+      // Ignore malformed client message
+    }
+  });
+
+  clientWs.on('close', () => {
+    closed = true;
+    try {
+      session?.close();
+    } catch {
+      // Ignore session close error
+    }
+  });
 });
 
 function applySensorReading(params: {
@@ -353,7 +525,15 @@ app.post('/api/simulate/heavy-rain', (_req, res) => {
     maxTicks: 6,
     intensityLabel: 'Severe Monsoon Cloudburst (65–95 mm/hr)',
   };
+  cachedForecast = {
+    ...cachedForecast,
+    condition: 'thunderstorm',
+    currentPrecipMm: Math.max(cachedForecast.currentPrecipMm, 18.4),
+    next3hPrecipMm: Math.max(cachedForecast.next3hPrecipMm, 34.0),
+    fetchedAt: new Date().toISOString(),
+  };
   broadcast('simulation:status', simulationState);
+  broadcast('forecast:update', cachedForecast);
 
   const runTick = () => {
     const targetMultipliers: Record<string, number> = {
@@ -412,6 +592,13 @@ app.post('/api/simulate/reset', (_req, res) => {
     tick: 0,
     maxTicks: 6,
     intensityLabel: 'Nominal',
+  };
+  cachedForecast = {
+    ...cachedForecast,
+    condition: mapWmoToCondition(undefined, 4.2, 14.5),
+    currentPrecipMm: 4.2,
+    next3hPrecipMm: 14.5,
+    fetchedAt: new Date().toISOString(),
   };
 
   for (const street of streets) {
@@ -663,6 +850,192 @@ app.patch('/api/reports/:id/verify', (req, res) => {
   reports[idx] = updated;
   broadcast('report:updated', updated);
   res.json(updated);
+});
+
+// Provisioned Google Maps API key config bridge (reads injected env var on server when Vite build-time var isn't set)
+app.get('/api/config/maps', (_req, res) => {
+  const key = process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY || '';
+  res.json({ mapsApiKey: key });
+});
+
+// AI: Live Weather & Civic Flood Advisories via Google Search Grounding
+app.post('/api/ai/search', async (req, res) => {
+  const { query, lang } = req.body ?? {};
+  const userQuery = typeof query === 'string' && query.trim()
+    ? query.trim().slice(0, 600)
+    : 'Latest Chennai IMD monsoon rainfall alert, Adyar and Velachery flood waterlogging updates today';
+
+  try {
+    const ai = getGeminiClient();
+    const activeDanger = streets
+      .filter((s) => s.riskLevel === 'danger' || s.riskLevel === 'warning')
+      .map((s) => `${s.name} (${s.waterPct}% drain full, ${s.rainfallMmHr} mm/hr)`)
+      .join('; ');
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-4-hydrogen',
+      contents: `Current local StreetFlood telemetry alerts: ${activeDanger || 'No streets currently above Warning threshold'}.\nUser query: ${userQuery}`,
+      config: {
+        systemInstruction: `You are a civic flood intelligence analyst for Chennai, India. Answer in ${
+          lang === 'ta' ? 'Tamil (தமிழ்)' : 'clear, concise English'
+        }. Synthesize verified web/weather bulletins cleanly in Markdown bullet points and relate them to street safety.`,
+        tools: [{ googleSearch: {} }],
+      },
+    });
+
+    const rawChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+    const sources = rawChunks
+      .map((chunk) => chunk.web)
+      .filter((w): w is { uri: string; title?: string } => Boolean(w?.uri))
+      .map((w) => ({ uri: w.uri, title: w.title || w.uri }));
+
+    res.json({
+      text: response.text ?? '',
+      sources,
+    });
+  } catch (err: unknown) {
+    const formatted = formatGeminiError(err, 'Search grounding request failed.');
+    res.status(formatted.status).json({ error: formatted.message, requiresPaidKey: formatted.isQuota });
+  }
+});
+
+// AI: Nearby Shelters, Hospitals & Safe Zones via Google Maps Grounding
+app.post('/api/ai/maps-grounding', async (req, res) => {
+  const { query, lat, lng, lang } = req.body ?? {};
+  const userQuery =
+    typeof query === 'string' && query.trim()
+      ? query.trim().slice(0, 500)
+      : 'Find emergency hospitals, elevated public shelters, and 24-hour pharmacies near this location';
+  const latitude = typeof lat === 'number' && Number.isFinite(lat) ? lat : 13.0355;
+  const longitude = typeof lng === 'number' && Number.isFinite(lng) ? lng : 80.2298;
+
+  try {
+    const ai = getGeminiClient();
+    const response = await ai.models.generateContent({
+      model: 'gemini-4-hydrogen',
+      contents: userQuery,
+      config: {
+        systemInstruction: `You are helping a commuter find safe nearby facilities during heavy rain. Respond in clear Markdown in ${
+          lang === 'ta' ? 'Tamil (தமிழ்)' : 'English'
+        } and highlight access roads, hours, or emergency readiness when available.`,
+        tools: [{ googleMaps: {} }],
+        toolConfig: {
+          retrievalConfig: {
+            latLng: {
+              latitude,
+              longitude,
+            },
+          },
+        },
+      },
+    });
+
+    const rawChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+    const places = rawChunks
+      .map((chunk) => chunk.maps)
+      .filter((m): m is NonNullable<typeof m> => Boolean(m?.uri || m?.title))
+      .map((m) => ({
+        title: m.title || 'Google Maps Place',
+        uri: m.uri || '',
+        placeId: m.placeId || '',
+        snippets:
+          m.placeAnswerSources?.reviewSnippets
+            ?.map((s) => ({
+              text: s.reviewId ? `${s.googleMapsUri || ''}` : '',
+              uri: s.googleMapsUri || '',
+            }))
+            .filter((s) => s.uri) ?? [],
+      }));
+
+    res.json({
+      text: response.text ?? '',
+      places,
+    });
+  } catch (err: unknown) {
+    const formatted = formatGeminiError(err, 'Google Maps grounding request failed.');
+    res.status(formatted.status).json({ error: formatted.message, requiresPaidKey: formatted.isQuota });
+  }
+});
+
+// AI: Flood Preparedness Visuals & Photo Hazard Editing (gemini-nano-banana-2.1)
+app.post('/api/ai/image', async (req, res) => {
+  const { prompt, imageBase64, mimeType, aspectRatio, imageSize, useSearchGrounding } = req.body ?? {};
+  if (typeof prompt !== 'string' || !prompt.trim()) {
+    return res.status(400).json({ error: 'A prompt is required to generate or edit an image.' });
+  }
+
+  try {
+    const ai = getGeminiClient();
+    const parts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [];
+
+    if (typeof imageBase64 === 'string' && imageBase64.length > 0) {
+      const cleanBase64 = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
+      parts.push({
+        inlineData: {
+          data: cleanBase64,
+          mimeType: typeof mimeType === 'string' && mimeType.startsWith('image/') ? mimeType : 'image/png',
+        },
+      });
+    }
+    parts.push({ text: prompt.trim().slice(0, 1200) });
+
+    const validAspects = ['1:1', '3:4', '4:3', '9:16', '16:9', '1:4', '1:8', '4:1', '8:1'];
+    const validSizes = ['1K', '2K', '4K'];
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-nano-banana-2.1',
+      contents: { parts },
+      config: {
+        imageConfig: {
+          aspectRatio: validAspects.includes(aspectRatio) ? aspectRatio : '16:9',
+          imageSize: validSizes.includes(imageSize) ? imageSize : '1K',
+        },
+        ...(useSearchGrounding && !imageBase64
+          ? {
+              tools: [
+                {
+                  googleSearch: {
+                    searchTypes: {
+                      webSearch: {},
+                      imageSearch: {},
+                    },
+                  },
+                },
+              ],
+            }
+          : {}),
+      },
+    });
+
+    let imageUrl: string | null = null;
+    let textNote = '';
+    for (const part of response.candidates?.[0]?.content?.parts ?? []) {
+      if (part.inlineData?.data) {
+        const mime = part.inlineData.mimeType ?? 'image/png';
+        imageUrl = `data:${mime};base64,${part.inlineData.data}`;
+      } else if (part.text) {
+        textNote += `${part.text}\n`;
+      }
+    }
+
+    if (!imageUrl) {
+      return res.status(502).json({
+        error: textNote.trim() || 'Model returned text without an image output.',
+      });
+    }
+
+    return res.json({ imageUrl, text: textNote.trim() });
+  } catch (err: unknown) {
+    const rawMsg = err instanceof Error ? err.message : 'Image generation failed.';
+    const isQuotaOrBilling =
+      /RESOURCE_EXHAUSTED|PERMISSION_DENIED|429|403|billing|paid|quota/i.test(rawMsg);
+    return res.status(isQuotaOrBilling ? 402 : 500).json({
+      error: isQuotaOrBilling
+        ? 'High-resolution AI image generation requires a billing-enabled Gemini API key in Settings > Secrets. You can still use the built-in Photo Hazard Annotator below.'
+        : rawMsg,
+      requiresPaidKey: isQuotaOrBilling,
+    });
+  }
 });
 
 async function startServer() {

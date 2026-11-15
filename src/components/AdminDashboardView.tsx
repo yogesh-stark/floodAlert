@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Activity, Battery, Check, Copy, Cpu, Plus, Send, Sliders } from 'lucide-react';
 import {
   Bar,
@@ -101,6 +101,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ streets,
   const [copiedCode, setCopiedCode] = useState(false);
   const [ingestFeedback, setIngestFeedback] = useState<string | null>(null);
 
+  // Sync editing fields when streets finish loading asynchronously
+  useEffect(() => {
+    if (!editingStreetId && streets.length > 0) {
+      const first = streets[0];
+      setEditingStreetId(first.id);
+      setWatchPct(first.watchPct);
+      setWarningPct(first.warningPct);
+      setDangerPct(first.dangerPct);
+      setDrainDepthCm(first.drainDepthCm);
+      setManualStreetId(first.id);
+    }
+  }, [streets, editingStreetId]);
+
   const handleSelectEditStreet = (id: string) => {
     setEditingStreetId(id);
     const st = streets.find((s) => s.id === id);
@@ -116,33 +129,43 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ streets,
   const handleSaveThresholds = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedEditStreet) return;
-    const resp = await fetch(`/api/streets/${selectedEditStreet.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ watchPct, warningPct, dangerPct, drainDepthCm }),
-    });
-    setThresholdMsg(resp.ok ? `Thresholds updated for ${selectedEditStreet.name}.` : 'Failed to update thresholds.');
+    try {
+      const resp = await fetch(`/api/streets/${selectedEditStreet.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ watchPct, warningPct, dangerPct, drainDepthCm }),
+      });
+      setThresholdMsg(resp.ok ? `Thresholds updated for ${selectedEditStreet.name}.` : 'Failed to update thresholds.');
+    } catch {
+      setThresholdMsg('Network error while updating thresholds.');
+    }
   };
 
   const handleAddStreet = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newStreetName.trim() || !newArea.trim()) return;
-    const resp = await fetch('/api/streets', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: newStreetName.trim(),
-        area: newArea.trim(),
-        lat: Number(newLat) || 13.045,
-        lng: Number(newLng) || 80.245,
-        alternateRouteEn: newAltRoute.trim() || 'Adjacent Arterial Road',
-      }),
-    });
-    if (resp.ok) {
-      setNewStreetName('');
-      setNewArea('');
-      setNewAltRoute('');
-      setAddStreetMsg('Street and ESP32 sensor node added and live on map.');
+    try {
+      const resp = await fetch('/api/streets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newStreetName.trim(),
+          area: newArea.trim(),
+          lat: Number(newLat) || 13.045,
+          lng: Number(newLng) || 80.245,
+          alternateRouteEn: newAltRoute.trim() || 'Adjacent Arterial Road',
+        }),
+      });
+      if (resp.ok) {
+        setNewStreetName('');
+        setNewArea('');
+        setNewAltRoute('');
+        setAddStreetMsg('Street and ESP32 sensor node added and live on map.');
+      } else {
+        setAddStreetMsg('Could not add street. Check coordinates and required fields.');
+      }
+    } catch {
+      setAddStreetMsg('Network error while adding street.');
     }
   };
 
@@ -150,46 +173,59 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ streets,
     e.preventDefault();
     if (!manualMsgEn.trim()) return;
     const channels: AlertChannel[] = ['push', 'sms', 'email'];
-    const resp = await fetch('/api/alerts/manual', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        streetId: manualStreetId,
-        level: manualLevel,
-        messageEn: manualMsgEn.trim(),
-        messageTa: manualMsgTa.trim() || manualMsgEn.trim(),
-        channels,
-      }),
-    });
-    if (resp.ok) {
-      setManualMsgEn('');
-      setManualMsgTa('');
-      setBroadcastFeedback('Emergency notice broadcasted via WebSocket, Push, and SMS log.');
+    try {
+      const resp = await fetch('/api/alerts/manual', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          streetId: manualStreetId,
+          level: manualLevel,
+          messageEn: manualMsgEn.trim(),
+          messageTa: manualMsgTa.trim() || manualMsgEn.trim(),
+          channels,
+        }),
+      });
+      if (resp.ok) {
+        setManualMsgEn('');
+        setManualMsgTa('');
+        setBroadcastFeedback('Emergency notice broadcasted via WebSocket, Push, and SMS log.');
+      } else {
+        setBroadcastFeedback('Could not broadcast alert. Please select a valid street.');
+      }
+    } catch {
+      setBroadcastFeedback('Network error while broadcasting alert.');
     }
   };
 
   const handleTestIngest = async () => {
     const target = streets[0];
     if (!target) return;
-    const resp = await fetch('/api/sensors/ingest', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sensorId: `esp32-${target.id}`,
-        waterLevelCm: Math.min(target.drainDepthCm, target.currentWaterCm + 18),
-        rainfallMmHr: target.rainfallMmHr + 22,
-        batteryPct: 88,
-      }),
-    });
-    if (resp.ok) {
-      setIngestFeedback(`Ingested test reading for esp32-${target.id} (+18 cm water, +22 mm/hr rain).`);
+    try {
+      const resp = await fetch('/api/sensors/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sensorId: `esp32-${target.id}`,
+          waterLevelCm: Math.min(target.drainDepthCm, target.currentWaterCm + 18),
+          rainfallMmHr: target.rainfallMmHr + 22,
+          batteryPct: 88,
+        }),
+      });
+      if (resp.ok) {
+        setIngestFeedback(`Ingested test reading for esp32-${target.id} (+18 cm water, +22 mm/hr rain).`);
+      } else {
+        setIngestFeedback('Test telemetry ingestion failed.');
+      }
+    } catch {
+      setIngestFeedback('Network error during test telemetry ping.');
     }
   };
 
   const copySnippet = () => {
-    navigator.clipboard.writeText(ESP32_SNIPPET);
-    setCopiedCode(true);
-    setTimeout(() => setCopiedCode(false), 2000);
+    navigator.clipboard?.writeText(ESP32_SNIPPET).then(() => {
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 2000);
+    }).catch(() => {});
   };
 
   // Analytics data

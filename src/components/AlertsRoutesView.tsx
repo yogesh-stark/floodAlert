@@ -38,9 +38,16 @@ export const AlertsRoutesView: React.FC<AlertsRoutesViewProps> = ({
   );
 
   const requestPushPermission = async () => {
-    if (typeof Notification === 'undefined') return;
-    const perm = await Notification.requestPermission();
-    setPushStatus(perm);
+    if (typeof Notification === 'undefined' || typeof Notification.requestPermission !== 'function') {
+      setPushStatus('unsupported');
+      return;
+    }
+    try {
+      const perm = await Notification.requestPermission();
+      setPushStatus(perm);
+    } catch {
+      setPushStatus('denied');
+    }
   };
 
   const toggleChannel = (ch: AlertChannel) => {

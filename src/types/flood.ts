@@ -130,8 +130,17 @@ export interface ReliefShelter {
   photoUrl?: string;
 }
 
+export type WeatherCondition =
+  | 'sunny'
+  | 'partly_cloudy'
+  | 'cloudy'
+  | 'rainy'
+  | 'heavy_rain'
+  | 'thunderstorm';
+
 export interface WeatherForecast {
   city: string;
+  condition: WeatherCondition;
   currentTempC: number;
   currentPrecipMm: number;
   next3hPrecipMm: number;
